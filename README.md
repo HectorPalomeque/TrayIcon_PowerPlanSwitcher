@@ -1,6 +1,6 @@
 # Tray Icon Power Plan Switcher App
 
-A lightweight Windows tray application to switch between power plans instantly and tweak detailed per-plan settings (buttons, lid, display, and sleep timeouts).  
+A lightweight Windows tray application to switch between power plans instantly (usefull for laptops+docking stations) and tweak detailed per-plan settings (buttons, lid, display, and sleep timeouts).  
 Includes **bilingual UI** (English / Español) and **theme-aware icons** for light/dark Windows modes.
 
 ---
