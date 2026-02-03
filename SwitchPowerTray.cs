@@ -121,18 +121,18 @@ public sealed class TrayContext : ApplicationContext
     private static readonly Guid SUB_BUTTONS = new Guid("4f971e89-eebd-4455-a8de-9e59040e7347");
     private static readonly Guid SET_PBUTTON = new Guid("7648efa3-dd9c-4e3e-b566-50f929386280"); // Power button action
     private static readonly Guid SET_SBUTTON = new Guid("96996bc0-ad50-47ec-923b-6f41874dd9eb"); // Sleep button action
-    private static readonly Guid SET_LID     = new Guid("5ca83367-6e45-459f-a27b-476b1d01c936"); // Lid close action
+    private static readonly Guid SET_LID = new Guid("5ca83367-6e45-459f-a27b-476b1d01c936"); // Lid close action
 
     // Subgroups for display & sleep
     private static readonly Guid SUB_VIDEO = new Guid("7516b95f-f776-4464-8c53-06167f40cc99");
     private static readonly Guid SUB_SLEEP = new Guid("238c9fa8-0aad-41ed-83f4-97be242c8f20");
 
     // Display timeout settings
-    private static readonly Guid SET_VIDEOIDLE    = new Guid("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e"); // Turn off display after
+    private static readonly Guid SET_VIDEOIDLE = new Guid("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e"); // Turn off display after
     private static readonly Guid SET_VIDEOCONLOCK = new Guid("8ec4b3a5-6868-48c2-be75-4f3044be88a7"); // Console lock display off timeout
 
     // Sleep-related timeout settings
-    private static readonly Guid SET_SLEEPIDLE     = new Guid("29f6c1db-86da-48c5-9fdb-f2b67b1f44da"); // Sleep after
+    private static readonly Guid SET_SLEEPIDLE = new Guid("29f6c1db-86da-48c5-9fdb-f2b67b1f44da"); // Sleep after
     private static readonly Guid SET_HIBERNATEIDLE = new Guid("9d7815a6-7ee4-497e-8888-515a05f02364"); // Hibernate after
     private static readonly Guid SET_UNATTENDSLEEP = new Guid("7bc4a2f9-d8fc-4469-b07b-33eb785aaca0"); // Unattended sleep timeout
 
@@ -152,14 +152,14 @@ public sealed class TrayContext : ApplicationContext
     }
 
     // Embedded resource logical names (must match /resource:,"LogicalName")
-    private const string RES_DESKTOP_DARK  = "Icon.Desktop.Dark.ico";
+    private const string RES_DESKTOP_DARK = "Icon.Desktop.Dark.ico";
     private const string RES_DESKTOP_LIGHT = "Icon.Desktop.Light.ico";
-    private const string RES_LAPTOP_DARK   = "Icon.Laptop.Dark.ico";
-    private const string RES_LAPTOP_LIGHT  = "Icon.Laptop.Light.ico";
-    private const string RES_BOLT_DARK     = "Icon.Bolt.Dark.ico";
-    private const string RES_BOLT_LIGHT    = "Icon.Bolt.Light.ico";
-    private const string RES_MOON_DARK     = "Icon.Moon.Dark.ico";
-    private const string RES_MOON_LIGHT    = "Icon.Moon.Light.ico";
+    private const string RES_LAPTOP_DARK = "Icon.Laptop.Dark.ico";
+    private const string RES_LAPTOP_LIGHT = "Icon.Laptop.Light.ico";
+    private const string RES_BOLT_DARK = "Icon.Bolt.Dark.ico";
+    private const string RES_BOLT_LIGHT = "Icon.Bolt.Light.ico";
+    private const string RES_MOON_DARK = "Icon.Moon.Dark.ico";
+    private const string RES_MOON_LIGHT = "Icon.Moon.Light.ico";
 
     internal const string AppId = "SwitchPowerTray";
     internal const string ShortcutName = "Switch Power Plan Tray.lnk";
@@ -167,25 +167,40 @@ public sealed class TrayContext : ApplicationContext
     private static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SwitchPowerTray");
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "config.txt");
-    private static readonly string LogPath    = Path.Combine(Path.GetTempPath(), "SwitchPowerTray.log");
+    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "SwitchPowerTray.log");
 
     private readonly NotifyIcon tray;
     private readonly bool debug;
 
     private static volatile bool _blockLaunch = false;
 
-    private string guidA = ""; // Desktop
-    private string guidB = ""; // Laptop
-    private string guidC = ""; // Bolt
-    private string guidD = ""; // Moon
-
     private enum IconSet { Auto, Light, Dark }
     private IconSet iconSetPref = IconSet.Auto;
 
-    private enum Slot { A_Desktop, B_Laptop, C_Bolt, D_Moon }
+    // ===== Dynamic slots =====
+    private sealed class SlotConfig
+    {
+        public char Key;                  // 'A', 'B', ...
+        public string Guid = "";          // assigned power plan GUID
+        public string LightIconPath = ""; // optional .ico path
+        public string DarkIconPath = "";  // optional .ico path
+    }
 
+    private readonly SortedDictionary<char, SlotConfig> slots =
+        new SortedDictionary<char, SlotConfig>();
+
+    // Cache for embedded icons (A-D fallback)
     private Icon exeIcon, lastIcon;
-    private readonly Dictionary<string, Icon> icons = new Dictionary<string, Icon>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Icon> icons =
+        new Dictionary<string, Icon>(StringComparer.OrdinalIgnoreCase);
+
+    // Cache for user icons loaded from disk (path -> Icon)
+    private readonly Dictionary<string, Icon> fileIcons =
+        new Dictionary<string, Icon>(StringComparer.OrdinalIgnoreCase);
+
+    // Cache for generated inverted icons (key = "invert|path|size")
+    private readonly Dictionary<string, Icon> generatedIcons =
+        new Dictionary<string, Icon>(StringComparer.OrdinalIgnoreCase);
 
     private string activeGuid = "";
     private List<Plan> plans = new List<Plan>();
@@ -201,7 +216,12 @@ public sealed class TrayContext : ApplicationContext
         }
     }
 
-    private struct AssignTag { public Slot Slot; public string Guid; public AssignTag(Slot s, string g) { Slot = s; Guid = g; } }
+    private struct AssignTagDynamic
+    {
+        public char SlotKey;
+        public string Guid;
+        public AssignTagDynamic(char s, string g) { SlotKey = s; Guid = g; }
+    }
 
     private readonly Timer themePollTimer = new Timer();
     private bool _busy;
@@ -210,7 +230,7 @@ public sealed class TrayContext : ApplicationContext
     private sealed class EndSessionWatcher : NativeWindow, IDisposable
     {
         private const int WM_QUERYENDSESSION = 0x0011;
-        private const int WM_ENDSESSION      = 0x0016;
+        private const int WM_ENDSESSION = 0x0016;
 
         public EndSessionWatcher()
         {
@@ -242,7 +262,8 @@ public sealed class TrayContext : ApplicationContext
         catch { exeIcon = SystemIcons.Application; }
 
         LoadAllIcons();
-        LoadConfig();
+        LoadConfig();          // loads slots + settings (and backward-compat for old GUIDA..D)
+        EnsureDefaultSlots();  // ensure at least A-D exist
         DetectLanguageIfNotSet();
 
         tray = new NotifyIcon();
@@ -262,12 +283,20 @@ public sealed class TrayContext : ApplicationContext
         endWatcher = new EndSessionWatcher();
 
         SystemEvents.SessionEnding += (s, e) => { BeginShutdown("Context.SessionEnding"); };
-        SystemEvents.SessionEnded  += (s, e) => { BeginShutdown("Context.SessionEnded"); };
+        SystemEvents.SessionEnded += (s, e) => { BeginShutdown("Context.SessionEnded"); };
         Application.ApplicationExit += (s, e) => { BeginShutdown("Context.ApplicationExit"); };
 
         themePollTimer.Interval = 2000;
         themePollTimer.Tick += OnThemePollTick;
         themePollTimer.Start();
+    }
+
+    private void EnsureDefaultSlots()
+    {
+        if (!slots.ContainsKey('A')) slots['A'] = new SlotConfig { Key = 'A' };
+        if (!slots.ContainsKey('B')) slots['B'] = new SlotConfig { Key = 'B' };
+        if (!slots.ContainsKey('C')) slots['C'] = new SlotConfig { Key = 'C' };
+        if (!slots.ContainsKey('D')) slots['D'] = new SlotConfig { Key = 'D' };
     }
 
     private void DetectLanguageIfNotSet()
@@ -310,22 +339,17 @@ public sealed class TrayContext : ApplicationContext
         if (iconSetPref == IconSet.Auto) UpdateTrayIcon();
     }
 
-    private void OnAssignClick(object sender, EventArgs e)
+    private void OnAssignClickDynamic(object sender, EventArgs e)
     {
         ToolStripMenuItem mi = sender as ToolStripMenuItem;
         if (mi == null || mi.Tag == null) return;
-        AssignTag t = (AssignTag)mi.Tag;
-        SetSlot(t.Slot, t.Guid);
-        SaveConfig();
-        UpdateTrayIcon();
-    }
+        AssignTagDynamic t = (AssignTagDynamic)mi.Tag;
 
-    private void OnAssignClearClick(object sender, EventArgs e)
-    {
-        ToolStripMenuItem mi = sender as ToolStripMenuItem;
-        if (mi == null || mi.Tag == null) return;
-        Slot slot = (Slot)mi.Tag;
-        SetSlot(slot, "");
+        EnsureDefaultSlots();
+        if (!slots.ContainsKey(t.SlotKey))
+            slots[t.SlotKey] = new SlotConfig { Key = t.SlotKey };
+
+        slots[t.SlotKey].Guid = t.Guid ?? "";
         SaveConfig();
         UpdateTrayIcon();
     }
@@ -338,9 +362,9 @@ public sealed class TrayContext : ApplicationContext
         if (!string.IsNullOrEmpty(guid)) TrySetActive(guid);
     }
 
-    private void OnThemeAuto(object sender, EventArgs e)  { iconSetPref = IconSet.Auto;  SaveConfig(); UpdateTrayIcon(); }
+    private void OnThemeAuto(object sender, EventArgs e) { iconSetPref = IconSet.Auto; SaveConfig(); UpdateTrayIcon(); }
     private void OnThemeLight(object sender, EventArgs e) { iconSetPref = IconSet.Light; SaveConfig(); UpdateTrayIcon(); }
-    private void OnThemeDark (object sender, EventArgs e) { iconSetPref = IconSet.Dark;  SaveConfig(); UpdateTrayIcon(); }
+    private void OnThemeDark(object sender, EventArgs e) { iconSetPref = IconSet.Dark; SaveConfig(); UpdateTrayIcon(); }
 
     private void OnLanguageEnglish(object sender, EventArgs e)
     {
@@ -380,7 +404,6 @@ public sealed class TrayContext : ApplicationContext
 
         drop.Closing += (s, e) =>
         {
-            // If mouse is inside this dropdown’s bounds, keep it open.
             Point p = Cursor.Position; // screen coords
             if (drop.Bounds.Contains(p))
             {
@@ -389,22 +412,59 @@ public sealed class TrayContext : ApplicationContext
         };
     }
 
+    // ---------- Standard icon label helpers ----------
+    private bool IsStandardSlot(char slotKey)
+    {
+        return slotKey >= 'A' && slotKey <= 'D';
+    }
+
+    private string GetStandardIconName(char slotKey)
+    {
+        switch (slotKey)
+        {
+            case 'A': return L("Desktop Icon", "Icono de escritorio");
+            case 'B': return L("Laptop Icon", "Icono de laptop");
+            case 'C': return L("Bolt Icon", "Icono de rayo");
+            case 'D': return L("Moon Icon", "Icono de luna");
+            default: return "";
+        }
+    }
+
+    private string SlotMenuTitle(char slotKey)
+    {
+        if (IsStandardSlot(slotKey))
+        {
+            return L(
+                "Assign Slot " + slotKey + " (" + GetStandardIconName(slotKey) + ") →",
+                "Asignar ranura " + slotKey + " (" + GetStandardIconName(slotKey) + ") →");
+        }
+
+        return L("Assign Slot " + slotKey + " →", "Asignar ranura " + slotKey + " →");
+    }
+
     // ---------- Menu construction ----------
     private ContextMenuStrip BuildMenu()
     {
+        EnsureDefaultSlots();
+
         var menu = new ContextMenuStrip();
 
         menu.Items.Add(new ToolStripMenuItem(
             L("Toggle now", "Cambiar ahora"), null, (EventHandler)OnToggleNow));
 
-        menu.Items.Add(BuildAssignSubmenu(
-            L("Assign Slot A (Desktop icon) →", "Asignar ranura A (Ícono-Escritorio) →"), Slot.A_Desktop));
-        menu.Items.Add(BuildAssignSubmenu(
-            L("Assign Slot B (Laptop icon) →", "Asignar ranura B (Ícono-Portátil) →"),  Slot.B_Laptop));
-        menu.Items.Add(BuildAssignSubmenu(
-            L("Assign Slot C (Bolt icon) →",   "Asignar ranura C (Ícono-Rayo) →"),       Slot.C_Bolt));
-        menu.Items.Add(BuildAssignSubmenu(
-            L("Assign Slot D (Moon icon) →",   "Asignar ranura D (Ícono-Luna) →"),       Slot.D_Moon));
+        // Dynamic assign menus for all slots
+        foreach (KeyValuePair<char, SlotConfig> kv in slots)
+        {
+            char key = kv.Key;
+            menu.Items.Add(BuildAssignSubmenuDynamic(key));
+        }
+
+        // Add Slot
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem(
+            L("Add Slot (next letter)…", "Agregar ranura (siguiente letra)…"),
+            null,
+            OnAddSlot));
 
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(BuildSwitchToSubmenu());
@@ -460,9 +520,41 @@ public sealed class TrayContext : ApplicationContext
         ToggleToNextAssigned();
     }
 
-    private ToolStripMenuItem BuildAssignSubmenu(string title, Slot slot)
+    private void OnAddSlot(object sender, EventArgs e)
     {
-        var sub = new ToolStripMenuItem(title);
+        EnsureDefaultSlots();
+        char next = GetNextSlotLetter();
+        if (next == '\0')
+        {
+            MessageBox.Show(
+                L("No more slots available (A–Z).", "No hay más ranuras disponibles (A–Z)."),
+                L("Switch Power Plan", "Cambiar plan de energía"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        slots[next] = new SlotConfig { Key = next };
+
+        // Ask for one icon right away (you can cancel)
+        PromptIconsForSlot(next);
+
+        SaveConfig();
+        RebuildMenu();
+        UpdateTrayIcon();
+    }
+
+    private char GetNextSlotLetter()
+    {
+        for (char c = 'A'; c <= 'Z'; c++)
+            if (!slots.ContainsKey(c)) return c;
+        return '\0';
+    }
+
+    private ToolStripMenuItem BuildAssignSubmenuDynamic(char slotKey)
+    {
+        var sub = new ToolStripMenuItem(SlotMenuTitle(slotKey));
+
         sub.DropDownOpening += delegate
         {
             sub.DropDownItems.Clear();
@@ -471,23 +563,120 @@ public sealed class TrayContext : ApplicationContext
             foreach (Plan p in plans)
             {
                 string label = p.Name + (p.IsActive ? "  (" + L("Active", "Activo") + ")" : "");
-                var item = new ToolStripMenuItem(label, null, OnAssignClick);
-                item.Tag = new AssignTag(slot, p.Guid);
+                var item = new ToolStripMenuItem(label, null, OnAssignClickDynamic);
+                item.Tag = new AssignTagDynamic(slotKey, p.Guid);
 
-                if (string.Equals(GetSlot(slot), p.Guid, StringComparison.OrdinalIgnoreCase))
+                SlotConfig sc;
+                if (!slots.TryGetValue(slotKey, out sc))
+                    sc = new SlotConfig { Key = slotKey };
+
+                if (string.Equals(sc.Guid, p.Guid, StringComparison.OrdinalIgnoreCase))
                     item.Checked = true;
 
                 sub.DropDownItems.Add(item);
             }
 
-            if (plans.Count > 0) sub.DropDownItems.Add(new ToolStripSeparator());
-            var clear = new ToolStripMenuItem(L("Clear this slot", "Limpiar esta ranura"), null, OnAssignClearClick);
-            clear.Tag = slot;
+            sub.DropDownItems.Add(new ToolStripSeparator());
+
+            // For A-D: show fixed icon label, and do NOT allow override
+            if (IsStandardSlot(slotKey))
+            {
+                var fixedIcon = new ToolStripMenuItem(
+                    L("Icon: ", "Icono: ") + GetStandardIconName(slotKey));
+                fixedIcon.Enabled = false;
+                sub.DropDownItems.Add(fixedIcon);
+            }
+            else
+            {
+                // Customizable slots (E+)
+                var setIcons = new ToolStripMenuItem(
+                    L("Set ONE icon (Light or Dark)…", "Configurar UN icono (Claro u Oscuro)…"),
+                    null,
+                    (s, e) =>
+                    {
+                        PromptIconsForSlot(slotKey);
+                        SaveConfig();
+                        UpdateTrayIcon();
+                    });
+                sub.DropDownItems.Add(setIcons);
+            }
+
+            // Clear
+            var clear = new ToolStripMenuItem(L("Clear this slot", "Limpiar esta ranura"), null,
+                (s, e) =>
+                {
+                    if (!slots.ContainsKey(slotKey))
+                        slots[slotKey] = new SlotConfig { Key = slotKey };
+                    slots[slotKey].Guid = "";
+                    SaveConfig();
+                    UpdateTrayIcon();
+                });
             sub.DropDownItems.Add(clear);
+
+            // Optional: Remove slot (only for E+; keep A-D always)
+            if (slotKey > 'D')
+            {
+                var remove = new ToolStripMenuItem(L("Remove this slot", "Eliminar esta ranura"), null,
+                    (s, e) =>
+                    {
+                        slots.Remove(slotKey);
+                        SaveConfig();
+                        RebuildMenu();
+                        UpdateTrayIcon();
+                    });
+                sub.DropDownItems.Add(remove);
+            }
         };
 
         WireNoCloseOnItemClick(sub.DropDown);
         return sub;
+    }
+
+    // ===== Updated: pick ONE icon and then ask if it's light/dark =====
+    // (Locked for A-D by calling code: we never invoke this for A-D)
+    private void PromptIconsForSlot(char slotKey)
+    {
+        if (IsStandardSlot(slotKey))
+            return; // locked
+
+        EnsureDefaultSlots();
+        if (!slots.ContainsKey(slotKey))
+            slots[slotKey] = new SlotConfig { Key = slotKey };
+
+        SlotConfig s = slots[slotKey];
+
+        string picked = PickIcoFile(L("Pick ONE icon (.ico)", "Elige UN icono (.ico)"));
+        if (string.IsNullOrEmpty(picked))
+            return; // user cancelled
+
+        DialogResult dr = MessageBox.Show(
+            L("Is this the LIGHT icon?\r\n\r\nYes = Light\r\nNo = Dark\r\nCancel = Don't change",
+              "¿Este es el icono CLARO?\r\n\r\nSí = Claro\r\nNo = Oscuro\r\nCancelar = No cambiar"),
+            L("Icon type", "Tipo de icono"),
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Question);
+
+        if (dr == DialogResult.Cancel)
+            return;
+
+        if (dr == DialogResult.Yes)
+            s.LightIconPath = picked;
+        else
+            s.DarkIconPath = picked;
+
+        slots[slotKey] = s;
+    }
+
+    private string PickIcoFile(string title)
+    {
+        using (var dlg = new OpenFileDialog())
+        {
+            dlg.Title = title;
+            dlg.Filter = "Icon files (*.ico)|*.ico";
+            dlg.CheckFileExists = true;
+            dlg.Multiselect = false;
+            return (dlg.ShowDialog() == DialogResult.OK) ? dlg.FileName : "";
+        }
     }
 
     private ToolStripMenuItem BuildThemeMenu()
@@ -496,19 +685,19 @@ public sealed class TrayContext : ApplicationContext
         sub.DropDownOpening += delegate
         {
             sub.DropDownItems.Clear();
-            var iAuto  = new ToolStripMenuItem(
+            var iAuto = new ToolStripMenuItem(
                 L("Auto (match system, high contrast)", "Auto (según sistema, alto contraste)"),
                 null, OnThemeAuto);
             var iLight = new ToolStripMenuItem(
                 L("Use Light icons", "Usar iconos claros"),
                 null, OnThemeLight);
-            var iDark  = new ToolStripMenuItem(
+            var iDark = new ToolStripMenuItem(
                 L("Use Dark icons", "Usar iconos oscuros"),
                 null, OnThemeDark);
 
-            iAuto.Checked  = (iconSetPref == IconSet.Auto);
+            iAuto.Checked = (iconSetPref == IconSet.Auto);
             iLight.Checked = (iconSetPref == IconSet.Light);
-            iDark.Checked  = (iconSetPref == IconSet.Dark);
+            iDark.Checked = (iconSetPref == IconSet.Dark);
 
             sub.DropDownItems.Add(iAuto);
             sub.DropDownItems.Add(iLight);
@@ -525,28 +714,32 @@ public sealed class TrayContext : ApplicationContext
         sub.DropDownOpening += delegate
         {
             sub.DropDownItems.Clear();
+            EnsureDefaultSlots();
             EnsurePlanList();
-            AddSwitchItem(sub, "A (" + L("Desktop", "Escritorio") + ")", guidA);
-            AddSwitchItem(sub, "B (" + L("Laptop", "Portátil")   + ")",  guidB);
-            AddSwitchItem(sub, "C (" + L("Bolt", "Rayo")         + ")",  guidC);
-            AddSwitchItem(sub, "D (" + L("Moon", "Luna")         + ")",  guidD);
-            if (sub.DropDownItems.Count == 0)
+
+            int count = 0;
+            foreach (KeyValuePair<char, SlotConfig> kv in slots)
+            {
+                SlotConfig sc = kv.Value;
+                if (string.IsNullOrEmpty(sc.Guid)) continue;
+                string name = FindPlanName(sc.Guid);
+                var item = new ToolStripMenuItem(sc.Key + ": " + name, null, OnSwitchToClick);
+                item.Tag = sc.Guid;
+
+                if (!string.IsNullOrEmpty(activeGuid) &&
+                    string.Equals(activeGuid, sc.Guid, StringComparison.OrdinalIgnoreCase))
+                    item.Checked = true;
+
+                sub.DropDownItems.Add(item);
+                count++;
+            }
+
+            if (count == 0)
                 sub.DropDownItems.Add(L("(no slots assigned)", "(sin ranuras asignadas)"));
         };
 
         WireNoCloseOnItemClick(sub.DropDown);
         return sub;
-    }
-
-    private void AddSwitchItem(ToolStripMenuItem parent, string caption, string guid)
-    {
-        if (string.IsNullOrEmpty(guid)) return;
-        string name = FindPlanName(guid);
-        var item = new ToolStripMenuItem(caption + ": " + name, null, OnSwitchToClick);
-        item.Tag = guid;
-        if (!string.IsNullOrEmpty(activeGuid) &&
-            string.Equals(activeGuid, guid, StringComparison.OrdinalIgnoreCase)) item.Checked = true;
-        parent.DropDownItems.Add(item);
     }
 
     // ---------- Buttons & Lid customizer ----------
@@ -559,7 +752,7 @@ public sealed class TrayContext : ApplicationContext
             root.DropDownItems.Clear();
             EnsurePlanList();
 
-            foreach (var p in plans)
+            foreach (Plan p in plans)
             {
                 var planItem = new ToolStripMenuItem(
                     p.Name + (p.IsActive ? "  (" + L("Active", "Activo") + ")" : ""));
@@ -571,7 +764,7 @@ public sealed class TrayContext : ApplicationContext
                 planItem.DropDownItems.Add(
                     BuildSettingMenu(L("Sleep button", "Botón de suspensión"), scheme, SET_SBUTTON));
                 planItem.DropDownItems.Add(
-                    BuildSettingMenu(L("Closing lid", "Cerrar tapa"),         scheme, SET_LID));
+                    BuildSettingMenu(L("Closing lid", "Cerrar tapa"), scheme, SET_LID));
 
                 WireNoCloseOnItemClick(planItem.DropDown);
                 root.DropDownItems.Add(planItem);
@@ -623,10 +816,8 @@ public sealed class TrayContext : ApplicationContext
 
             mi.Click += delegate
             {
-                // apply change
                 WriteAction(scheme, setting, ac, val);
 
-                // update checkmarks in this submenu
                 foreach (ToolStripItem tsi in parent.DropDownItems)
                 {
                     ToolStripMenuItem tmi = tsi as ToolStripMenuItem;
@@ -661,7 +852,7 @@ public sealed class TrayContext : ApplicationContext
             }
         }
         catch { }
-        return 0; // default
+        return 0;
     }
 
     private void WriteAction(Guid scheme, Guid setting, bool ac, uint value)
@@ -671,9 +862,8 @@ public sealed class TrayContext : ApplicationContext
             Guid sub = SUB_BUTTONS;
             Guid set = setting;
             if (ac) PowerWriteACValueIndex(IntPtr.Zero, ref scheme, ref sub, ref set, value);
-            else    PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref sub, ref set, value);
+            else PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref sub, ref set, value);
 
-            // If we edited the active scheme, re-apply it so changes take effect immediately
             if (!string.IsNullOrEmpty(activeGuid) &&
                 string.Equals(scheme.ToString(), activeGuid, StringComparison.OrdinalIgnoreCase))
             {
@@ -689,9 +879,9 @@ public sealed class TrayContext : ApplicationContext
         switch ((ButtonLidAction)v)
         {
             case ButtonLidAction.DoNothing: return L("Do nothing", "No hacer nada");
-            case ButtonLidAction.Sleep:     return L("Sleep", "Suspender");
+            case ButtonLidAction.Sleep: return L("Sleep", "Suspender");
             case ButtonLidAction.Hibernate: return L("Hibernate", "Hibernar");
-            case ButtonLidAction.Shutdown:  return L("Shut down", "Apagar");
+            case ButtonLidAction.Shutdown: return L("Shut down", "Apagar");
             default: return v.ToString();
         }
     }
@@ -708,7 +898,7 @@ public sealed class TrayContext : ApplicationContext
             root.DropDownItems.Clear();
             EnsurePlanList();
 
-            foreach (var p in plans)
+            foreach (Plan p in plans)
             {
                 var planItem = new ToolStripMenuItem(
                     p.Name + (p.IsActive ? "  (" + L("Active", "Activo") + ")" : ""));
@@ -813,10 +1003,10 @@ public sealed class TrayContext : ApplicationContext
                     label = hrs + " " + L("hours", "horas");
             }
 
-            uint secsLocal = secs; // capture for closure
+            uint secsLocal = secs;
 
             var mi = new ToolStripMenuItem(label);
-            mi.Tag = secsLocal; // store raw seconds for later comparison
+            mi.Tag = secsLocal;
 
             if (current == secsLocal) mi.Checked = true;
 
@@ -825,7 +1015,6 @@ public sealed class TrayContext : ApplicationContext
                 WriteTimeoutSeconds(scheme, subgroup, setting, ac, secsLocal);
                 current = secsLocal;
 
-                // refresh checkmarks in this submenu
                 foreach (ToolStripItem tsi in parent.DropDownItems)
                 {
                     ToolStripMenuItem tmi = tsi as ToolStripMenuItem;
@@ -840,19 +1029,17 @@ public sealed class TrayContext : ApplicationContext
             parent.DropDownItems.Add(mi);
         }
 
-        // Separator + Custom…
         parent.DropDownItems.Add(new ToolStripSeparator());
 
         var customItem = new ToolStripMenuItem(L("Custom…", "Personalizado…"));
         customItem.Click += delegate
         {
             uint newSeconds = PromptCustomTimeoutSeconds(current);
-            if (newSeconds == current) return; // user cancelled or no change
+            if (newSeconds == current) return;
 
             WriteTimeoutSeconds(scheme, subgroup, setting, ac, newSeconds);
             current = newSeconds;
 
-            // update checkmarks: match only exact preset if exists
             foreach (ToolStripItem tsi in parent.DropDownItems)
             {
                 ToolStripMenuItem tmi = tsi as ToolStripMenuItem;
@@ -888,7 +1075,6 @@ public sealed class TrayContext : ApplicationContext
         }
         catch { }
 
-        // default / not found
         return 0;
     }
 
@@ -904,7 +1090,6 @@ public sealed class TrayContext : ApplicationContext
             else
                 PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref sub, ref set, seconds);
 
-            // If we edited the active scheme, re-apply it so changes take effect immediately
             if (!string.IsNullOrEmpty(activeGuid) &&
                 string.Equals(scheme.ToString(), activeGuid, StringComparison.OrdinalIgnoreCase))
             {
@@ -1026,13 +1211,15 @@ public sealed class TrayContext : ApplicationContext
         _busy = true;
         try
         {
+            EnsureDefaultSlots();
             EnsurePlanList();
 
             List<string> cycle = new List<string>();
-            if (!string.IsNullOrEmpty(guidA)) cycle.Add(guidA);
-            if (!string.IsNullOrEmpty(guidB)) cycle.Add(guidB);
-            if (!string.IsNullOrEmpty(guidC)) cycle.Add(guidC);
-            if (!string.IsNullOrEmpty(guidD)) cycle.Add(guidD);
+            foreach (KeyValuePair<char, SlotConfig> kv in slots)
+            {
+                if (!string.IsNullOrEmpty(kv.Value.Guid))
+                    cycle.Add(kv.Value.Guid);
+            }
 
             if (cycle.Count == 0)
             {
@@ -1135,14 +1322,111 @@ public sealed class TrayContext : ApplicationContext
             : TrimForTray(activeName);
     }
 
+    // ===== Inversion support =====
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    private Icon CreateInvertedIcon(Icon src, int size)
+    {
+        if (src == null) return null;
+
+        Bitmap bmp = null;
+        Bitmap inverted = null;
+        IntPtr hIcon = IntPtr.Zero;
+
+        try
+        {
+            // Render source icon to a known size
+            bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.Transparent);
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawIcon(src, new Rectangle(0, 0, size, size));
+            }
+
+            // Invert RGB, keep Alpha
+            inverted = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    Color c = bmp.GetPixel(x, y);
+                    Color inv = Color.FromArgb(c.A, 255 - c.R, 255 - c.G, 255 - c.B);
+                    inverted.SetPixel(x, y, inv);
+                }
+            }
+
+            hIcon = inverted.GetHicon();
+            Icon fromHandle = Icon.FromHandle(hIcon);
+
+            // Clone so we can safely destroy the handle
+            Icon cloned = (Icon)fromHandle.Clone();
+            return cloned;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            try
+            {
+                if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
+            }
+            catch { }
+
+            if (bmp != null) bmp.Dispose();
+            if (inverted != null) inverted.Dispose();
+        }
+    }
+
+    private Icon LoadIconOrGeneratedCounterpart(string desiredPath, string otherPath, int size)
+    {
+        // Try direct
+        Icon direct = LoadIconFromFileCached(desiredPath);
+        if (direct != null) return direct;
+
+        // If missing, try other path and invert it
+        if (!string.IsNullOrEmpty(otherPath))
+        {
+            Icon baseIcon = LoadIconFromFileCached(otherPath);
+            if (baseIcon == null) return null;
+
+            string key = "invert|" + otherPath + "|" + size.ToString();
+
+            Icon cached;
+            if (generatedIcons.TryGetValue(key, out cached) && cached != null)
+                return cached;
+
+            Icon inverted = CreateInvertedIcon(baseIcon, size);
+            if (inverted != null)
+                generatedIcons[key] = inverted;
+
+            return inverted;
+        }
+
+        return null;
+    }
+
     private Icon IconForGuid(string guid)
     {
-        string slotName = null;
-        if (!string.IsNullOrEmpty(guidA) && guid.Equals(guidA, StringComparison.OrdinalIgnoreCase)) slotName = "Desktop";
-        else if (!string.IsNullOrEmpty(guidB) && guid.Equals(guidB, StringComparison.OrdinalIgnoreCase)) slotName = "Laptop";
-        else if (!string.IsNullOrEmpty(guidC) && guid.Equals(guidC, StringComparison.OrdinalIgnoreCase)) slotName = "Bolt";
-        else if (!string.IsNullOrEmpty(guidD) && guid.Equals(guidD, StringComparison.OrdinalIgnoreCase)) slotName = "Moon";
-        if (slotName == null) return null;
+        if (string.IsNullOrEmpty(guid)) return null;
+
+        EnsureDefaultSlots();
+
+        // Find which slot has this GUID
+        char? slotKey = null;
+        foreach (KeyValuePair<char, SlotConfig> kv in slots)
+        {
+            if (!string.IsNullOrEmpty(kv.Value.Guid) &&
+                string.Equals(kv.Value.Guid, guid, StringComparison.OrdinalIgnoreCase))
+            {
+                slotKey = kv.Key;
+                break;
+            }
+        }
+        if (slotKey == null) return null;
 
         string variant;
         if (iconSetPref == IconSet.Auto)
@@ -1150,10 +1434,55 @@ public sealed class TrayContext : ApplicationContext
         else
             variant = (iconSetPref == IconSet.Light) ? "Light" : "Dark";
 
-        Icon ic;
-        if (icons.TryGetValue(slotName + "." + variant, out ic))
-            return ic;
+        // A-D are LOCKED: always use embedded icons, ignore any saved paths.
+        if (IsStandardSlot(slotKey.Value))
+        {
+            string slotName = null;
+            if (slotKey.Value == 'A') slotName = "Desktop";
+            else if (slotKey.Value == 'B') slotName = "Laptop";
+            else if (slotKey.Value == 'C') slotName = "Bolt";
+            else if (slotKey.Value == 'D') slotName = "Moon";
+
+            Icon embedded;
+            if (slotName != null && icons.TryGetValue(slotName + "." + variant, out embedded))
+                return embedded;
+
+            return null;
+        }
+
+        // E+ can be customized
+        SlotConfig sc = slots[slotKey.Value];
+
+        // Prefer user-provided .ico for this slot, but auto-generate missing counterpart by inversion
+        string desiredPath = (variant == "Light") ? sc.LightIconPath : sc.DarkIconPath;
+        string otherPath = (variant == "Light") ? sc.DarkIconPath : sc.LightIconPath;
+
+        Icon fileIcon = LoadIconOrGeneratedCounterpart(desiredPath, otherPath, 16);
+        if (fileIcon != null) return fileIcon;
+
         return null;
+    }
+
+    private Icon LoadIconFromFileCached(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        try
+        {
+            if (!File.Exists(path)) return null;
+
+            Icon cached;
+            if (fileIcons.TryGetValue(path, out cached) && cached != null)
+                return cached;
+
+            // Avoid file locking by reading via stream
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                var ic = new Icon(fs);
+                fileIcons[path] = ic;
+                return ic;
+            }
+        }
+        catch { return null; }
     }
 
     private static string TrimForTray(string s)
@@ -1277,32 +1606,40 @@ public sealed class TrayContext : ApplicationContext
             themePollTimer.Stop();
             tray.Visible = false;
             tray.Dispose();
+
             if (exeIcon != null) exeIcon.Dispose();
-            foreach (KeyValuePair<string, Icon> kv in icons) if (kv.Value != null) kv.Value.Dispose();
+
+            foreach (KeyValuePair<string, Icon> kv in icons)
+            {
+                if (kv.Value != null) kv.Value.Dispose();
+            }
+            foreach (KeyValuePair<string, Icon> kv in fileIcons)
+            {
+                if (kv.Value != null) kv.Value.Dispose();
+            }
+            foreach (KeyValuePair<string, Icon> kv in generatedIcons)
+            {
+                if (kv.Value != null) kv.Value.Dispose();
+            }
+
+            icons.Clear();
+            fileIcons.Clear();
+            generatedIcons.Clear();
         }
         catch { }
         base.ExitThreadCore();
-    }
-
-    private static void LogTrace(string msg)
-    {
-        try
-        {
-            File.AppendAllText(LogPath, DateTime.Now.ToString("s") + "  " + msg + Environment.NewLine);
-        }
-        catch { }
     }
 
     private void LoadAllIcons()
     {
         AddIcon("Desktop.Dark", RES_DESKTOP_DARK);
         AddIcon("Desktop.Light", RES_DESKTOP_LIGHT);
-        AddIcon("Laptop.Dark",  RES_LAPTOP_DARK);
+        AddIcon("Laptop.Dark", RES_LAPTOP_DARK);
         AddIcon("Laptop.Light", RES_LAPTOP_LIGHT);
-        AddIcon("Bolt.Dark",    RES_BOLT_DARK);
-        AddIcon("Bolt.Light",   RES_BOLT_LIGHT);
-        AddIcon("Moon.Dark",    RES_MOON_DARK);
-        AddIcon("Moon.Light",   RES_MOON_LIGHT);
+        AddIcon("Bolt.Dark", RES_BOLT_DARK);
+        AddIcon("Bolt.Light", RES_BOLT_LIGHT);
+        AddIcon("Moon.Dark", RES_MOON_DARK);
+        AddIcon("Moon.Light", RES_MOON_LIGHT);
     }
 
     private void AddIcon(string key, string resName)
@@ -1348,16 +1685,49 @@ public sealed class TrayContext : ApplicationContext
         try
         {
             if (!File.Exists(ConfigPath)) return;
+
+            // Backward-compat temp variables for old GUIDA..D format
+            string oldA = null, oldB = null, oldC = null, oldD = null;
+
             foreach (string line in File.ReadAllLines(ConfigPath))
             {
                 string[] kv = line.Split(new char[] { '=' }, 2);
                 if (kv.Length != 2) continue;
                 string k = kv[0].Trim().ToUpperInvariant();
                 string v = kv[1].Trim();
-                if (k == "GUIDA") guidA = v;
-                else if (k == "GUIDB") guidB = v;
-                else if (k == "GUIDC") guidC = v;
-                else if (k == "GUIDD") guidD = v;
+
+                if (k == "SLOT")
+                {
+                    // v = "A|guid|lightPath|darkPath"
+                    string[] parts = v.Split('|');
+                    if (parts.Length >= 1 && parts[0].Length == 1)
+                    {
+                        char c = char.ToUpperInvariant(parts[0][0]);
+                        if (c >= 'A' && c <= 'Z')
+                        {
+                            SlotConfig sc;
+                            if (!slots.TryGetValue(c, out sc))
+                                sc = new SlotConfig { Key = c };
+
+                            if (parts.Length >= 2) sc.Guid = parts[1] ?? "";
+                            if (parts.Length >= 3) sc.LightIconPath = parts[2] ?? "";
+                            if (parts.Length >= 4) sc.DarkIconPath = parts[3] ?? "";
+
+                            // Lock A-D: discard any custom icon paths from config
+                            if (IsStandardSlot(c))
+                            {
+                                sc.LightIconPath = "";
+                                sc.DarkIconPath = "";
+                            }
+
+                            slots[c] = sc;
+                        }
+                    }
+                }
+                else if (k == "GUIDA") oldA = v;
+                else if (k == "GUIDB") oldB = v;
+                else if (k == "GUIDC") oldC = v;
+                else if (k == "GUIDD") oldD = v;
                 else if (k == "ICONSET")
                 {
                     try { iconSetPref = (IconSet)Enum.Parse(typeof(IconSet), v, true); }
@@ -1374,6 +1744,27 @@ public sealed class TrayContext : ApplicationContext
                         uiLanguage = UiLanguage.English;
                 }
             }
+
+            // If we didn't have SLOT= lines, map old GUIDA..D into new structure
+            if (slots.Count == 0 && (oldA != null || oldB != null || oldC != null || oldD != null))
+            {
+                if (oldA != null) slots['A'] = new SlotConfig { Key = 'A', Guid = oldA };
+                if (oldB != null) slots['B'] = new SlotConfig { Key = 'B', Guid = oldB };
+                if (oldC != null) slots['C'] = new SlotConfig { Key = 'C', Guid = oldC };
+                if (oldD != null) slots['D'] = new SlotConfig { Key = 'D', Guid = oldD };
+            }
+
+            // Safety: enforce lock after any legacy load
+            foreach (char c in new[] { 'A', 'B', 'C', 'D' })
+            {
+                SlotConfig sc;
+                if (slots.TryGetValue(c, out sc))
+                {
+                    sc.LightIconPath = "";
+                    sc.DarkIconPath = "";
+                    slots[c] = sc;
+                }
+            }
         }
         catch { }
     }
@@ -1383,34 +1774,27 @@ public sealed class TrayContext : ApplicationContext
         try
         {
             Directory.CreateDirectory(ConfigDir);
-            File.WriteAllLines(ConfigPath, new string[]
+            EnsureDefaultSlots();
+
+            var lines = new List<string>();
+
+            foreach (KeyValuePair<char, SlotConfig> kv in slots)
             {
-                "GUIDA=" + (guidA ?? ""),
-                "GUIDB=" + (guidB ?? ""),
-                "GUIDC=" + (guidC ?? ""),
-                "GUIDD=" + (guidD ?? ""),
-                "ICONSET=" + iconSetPref.ToString(),
-                "LANG=" + uiLanguage.ToString()
-            });
+                SlotConfig s = kv.Value;
+
+                // Lock A-D: do not persist icon paths
+                string light = IsStandardSlot(s.Key) ? "" : (s.LightIconPath ?? "");
+                string dark = IsStandardSlot(s.Key) ? "" : (s.DarkIconPath ?? "");
+
+                lines.Add("SLOT=" + s.Key + "|" + (s.Guid ?? "") + "|" + light + "|" + dark);
+            }
+
+            lines.Add("ICONSET=" + iconSetPref.ToString());
+            lines.Add("LANG=" + uiLanguage.ToString());
+
+            File.WriteAllLines(ConfigPath, lines.ToArray());
         }
         catch { }
-    }
-
-    private string GetSlot(Slot s)
-    {
-        if (s == Slot.A_Desktop) return guidA;
-        if (s == Slot.B_Laptop)  return guidB;
-        if (s == Slot.C_Bolt)    return guidC;
-        if (s == Slot.D_Moon)    return guidD;
-        return "";
-    }
-
-    private void SetSlot(Slot s, string guid)
-    {
-        if (s == Slot.A_Desktop)      guidA = guid;
-        else if (s == Slot.B_Laptop)  guidB = guid;
-        else if (s == Slot.C_Bolt)    guidC = guid;
-        else if (s == Slot.D_Moon)    guidD = guid;
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
@@ -1448,17 +1832,6 @@ public sealed class TrayContext : ApplicationContext
         void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
         void Resolve(IntPtr hwnd, uint fFlags);
         void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-    }
-
-    [ComImport, Guid("0000010B-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPersistFile
-    {
-        void GetClassID(out Guid pClassID);
-        void IsDirty();
-        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
-        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, bool fRemember);
-        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
-        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
     }
 
     [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -1510,7 +1883,8 @@ public sealed class TrayContext : ApplicationContext
         props.SetValue(ref key, ref pv);
         props.Commit();
 
-        IPersistFile file = (IPersistFile)link;
+        // Persist
+        var file = (System.Runtime.InteropServices.ComTypes.IPersistFile)link;
         file.Save(lnkPath, true);
     }
 }
